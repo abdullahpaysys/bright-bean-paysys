@@ -87,9 +87,11 @@ class SlackAnalyticsRequest:
         Slack channel ID (``C0123…``).
     user_id : str
         Slack user ID of the person who mentioned the bot (``U0123…``).
-    thread_ts : str | None
-        Thread timestamp if the mention was inside a thread, else ``None``.
-        Retained so responses can be posted in the correct thread.
+    thread_ts : str
+        Thread timestamp for the Slack thread.  When the original event
+        was not in a thread, Iqra's normalization falls back to
+        ``event_ts`` so the bot always replies in a thread anchored to
+        the original message.  Never empty.
     text : str
         Normalized message text (bot mention removed, whitespace trimmed).
         Must be non-empty — Iqra's normalization rejects empty messages
@@ -101,7 +103,7 @@ class SlackAnalyticsRequest:
     team_id: str
     channel_id: str
     user_id: str
-    thread_ts: str | None
+    thread_ts: str
     text: str
 
     def __post_init__(self) -> None:
@@ -115,6 +117,8 @@ class SlackAnalyticsRequest:
             raise ValueError("channel_id must not be empty")
         if not self.user_id:
             raise ValueError("user_id must not be empty")
+        if not self.thread_ts:
+            raise ValueError("thread_ts must not be empty — normalization should fall back to event_ts")
         if not self.text:
             raise ValueError("text must not be empty — normalization should have rejected it")
 

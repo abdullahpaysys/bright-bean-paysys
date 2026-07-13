@@ -92,12 +92,12 @@ class TestSlackAnalyticsRequest:
             team_id="T1",
             channel_id="C1",
             user_id="U1",
-            thread_ts=None,
+            thread_ts="1720000000.000100",
             text="help",
         )
-        assert req.thread_ts is None
+        assert req.thread_ts == "1720000000.000100"
 
-    @pytest.mark.parametrize("field", ["correlation_id", "event_id", "team_id", "channel_id", "user_id", "text"])
+    @pytest.mark.parametrize("field", ["correlation_id", "event_id", "team_id", "channel_id", "user_id", "thread_ts", "text"])
     def test_empty_required_field_rejected(self, field):
         kwargs = dict(
             correlation_id="c1",
@@ -105,7 +105,7 @@ class TestSlackAnalyticsRequest:
             team_id="T1",
             channel_id="C1",
             user_id="U1",
-            thread_ts=None,
+            thread_ts="1720000000.000100",
             text="hello",
         )
         kwargs[field] = ""
