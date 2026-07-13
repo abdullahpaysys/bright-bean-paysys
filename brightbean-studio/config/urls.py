@@ -9,6 +9,8 @@ from apps.oauth_server import views as oauth_views
 
 urlpatterns = [
     path("admin/", admin.site.urls),
+    # Slack Analytics Bot — events endpoint at /slack/events/
+    path("slack/", include("apps.slack_bot.urls")),
     path("health/", health_check, name="health_check"),
     path("accounts/", include("apps.accounts.urls")),
     path("accounts/", include("allauth.urls")),
