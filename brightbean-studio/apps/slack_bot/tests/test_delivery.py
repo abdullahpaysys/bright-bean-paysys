@@ -16,7 +16,6 @@ from apps.slack_bot.delivery import (
 )
 from apps.slack_bot.exceptions import SlackDeliveryError
 
-
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
@@ -294,7 +293,8 @@ def test_delivery_result_defaults():
 
 def test_delivery_module_does_not_import_llm_clients():
     import apps.slack_bot.delivery as delivery_mod
-    source = open(delivery_mod.__file__).read()
+    with open(delivery_mod.__file__) as f:
+        source = f.read()
     assert "anthropic" not in source
     assert "openai" not in source
     assert "zhipuai" not in source
@@ -302,6 +302,7 @@ def test_delivery_module_does_not_import_llm_clients():
 
 def test_delivery_module_does_not_import_brightbean_analytics():
     import apps.slack_bot.delivery as delivery_mod
-    source = open(delivery_mod.__file__).read()
+    with open(delivery_mod.__file__) as f:
+        source = f.read()
     assert "apps.analytics" not in source
     assert "AnalyticsService" not in source

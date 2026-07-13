@@ -1,6 +1,7 @@
 """Tests for SlackInboundEvent model creation and field defaults."""
 
 import pytest
+from django.db import IntegrityError
 
 from apps.slack_bot.constants import (
     STATUS_PROCESSING,
@@ -50,7 +51,7 @@ def test_unique_event_id_blocks_duplicates():
         user_id="U0001",
         event_ts="1720000000.000300",
     )
-    with pytest.raises(Exception):
+    with pytest.raises(IntegrityError):
         SlackInboundEvent.objects.create(
             event_id="EvDUP",
             team_id="T0001",

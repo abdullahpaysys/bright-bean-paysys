@@ -12,10 +12,14 @@ from __future__ import annotations
 import json
 import logging
 import os
+from collections.abc import Callable
 from dataclasses import dataclass
-from typing import Any, Callable, Dict, Optional
+from typing import TYPE_CHECKING, Any
 
 from django.conf import settings
+
+if TYPE_CHECKING:
+    import httpx
 
 from .exceptions import SlackDeliveryError
 
@@ -37,7 +41,7 @@ class SlackDeliveryResult:
     channel_id: str
     response_ts: str = ""
     error: str = ""
-    raw_response: Optional[Dict[str, Any]] = None
+    raw_response: dict[str, Any] | None = None
 
 
 # ---------------------------------------------------------------------------
@@ -59,7 +63,7 @@ def get_slack_bot_token() -> str:
 # Default HTTP post function (httpx)
 # ---------------------------------------------------------------------------
 
-def _default_http_post(url: str, *, json_body: dict, headers: dict) -> "httpx.Response":
+def _default_http_post(url: str, *, json_body: dict, headers: dict) -> httpx.Response:
     """Default HTTP POST using httpx.  Imported lazily to avoid import-time issues in tests."""
     import httpx
 
@@ -74,8 +78,8 @@ def send_slack_message(
     channel_id: str,
     text: str,
     thread_ts: str = "",
-    token: Optional[str] = None,
-    http_post: Optional[Callable] = None,
+    token: str | None = None,
+    http_post: Callable | None = None,
 ) -> SlackDeliveryResult:
     """Send a message to a Slack channel via ``chat.postMessage``.
 
@@ -114,7 +118,7 @@ def send_slack_message(
         )
 
     # --- Build request ---
-    body: Dict[str, Any] = {
+    body: dict[str, Any] = {
         "channel": channel_id,
         "text": text,
     }

@@ -10,8 +10,9 @@ can replace the test fake with a real Slack ``chat.postMessage`` call.
 from __future__ import annotations
 
 import logging
+from collections.abc import Callable
 from dataclasses import dataclass
-from typing import Any, Callable, Dict, Optional
+from typing import Any
 
 from background_task import background
 
@@ -19,11 +20,10 @@ from .constants import (
     STATUS_FAILED,
     STATUS_IGNORED,
     STATUS_PROCESSING,
-    STATUS_RECEIVED,
     STATUS_RESPONDED,
 )
-from .exceptions import SlackNormalizationError
 from .delivery import deliver_slack_response
+from .exceptions import SlackNormalizationError
 from .models import SlackInboundEvent
 from .normalization import normalize_inbound_event
 from .routing import route_simple_command
@@ -58,7 +58,7 @@ class ProcessingResult:
     response_type: str = ""
     response_ts: str = ""
     error: str = ""
-    metadata: Optional[Dict[str, Any]] = None
+    metadata: dict[str, Any] | None = None
 
 
 # ---------------------------------------------------------------------------
@@ -67,7 +67,7 @@ class ProcessingResult:
 
 def process_inbound_event(
     event_id: str,
-    deliver_response: Optional[Callable] = None,
+    deliver_response: Callable | None = None,
 ) -> ProcessingResult:
     """Process a single ``SlackInboundEvent`` end-to-end.
 

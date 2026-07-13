@@ -63,6 +63,7 @@ def normalize_inbound_event(event) -> SlackAnalyticsRequest:
     1. Clean the message text (remove mentions, collapse whitespace).
     2. Reject empty or punctuation-only messages.
     3. Fall back to ``event_ts`` when ``thread_ts`` is empty.
+    4. Fall back to ``event_id`` when ``correlation_id`` is empty.
 
     Raises ``SlackNormalizationError`` for messages that are empty
     or punctuation-only after cleaning.
@@ -76,9 +77,10 @@ def normalize_inbound_event(event) -> SlackAnalyticsRequest:
         )
 
     thread_ts = event.thread_ts if event.thread_ts else event.event_ts
+    correlation_id = event.correlation_id if event.correlation_id else event.event_id
 
     return SlackAnalyticsRequest(
-        correlation_id=event.correlation_id,
+        correlation_id=correlation_id,
         event_id=event.event_id,
         team_id=event.team_id,
         channel_id=event.channel_id,

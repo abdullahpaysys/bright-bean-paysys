@@ -14,11 +14,11 @@ from __future__ import annotations
 
 import json
 import logging
+from unittest.mock import patch
 
 import pytest
 from django.test import Client, override_settings
 from django.urls import reverse
-from unittest.mock import patch
 
 from apps.slack_bot.constants import (
     STATUS_FAILED,

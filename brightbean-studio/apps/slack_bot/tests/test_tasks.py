@@ -12,13 +12,13 @@ from apps.slack_bot.constants import (
 )
 from apps.slack_bot.models import SlackInboundEvent
 from apps.slack_bot.tasks import (
-    ProcessingResult,
     RESULT_ALREADY_RESPONDED,
     RESULT_DELIVERED,
     RESULT_FAILED,
     RESULT_IGNORED,
     RESULT_NOT_FOUND,
     RESULT_PROCESSED,
+    ProcessingResult,
     process_inbound_event,
 )
 
@@ -298,7 +298,8 @@ def test_processing_result_defaults():
 
 def test_tasks_module_does_not_import_slack_sdk():
     import apps.slack_bot.tasks as tasks_mod
-    source = open(tasks_mod.__file__).read()
+    with open(tasks_mod.__file__) as f:
+        source = f.read()
     assert "slack_sdk" not in source
     assert "WebClient" not in source
     # "from slack" would indicate a Slack SDK import — but our delivery.py
@@ -308,7 +309,8 @@ def test_tasks_module_does_not_import_slack_sdk():
 
 def test_tasks_module_does_not_import_llm_clients():
     import apps.slack_bot.tasks as tasks_mod
-    source = open(tasks_mod.__file__).read()
+    with open(tasks_mod.__file__) as f:
+        source = f.read()
     assert "anthropic" not in source
     assert "openai" not in source
     assert "zhipuai" not in source
@@ -316,7 +318,8 @@ def test_tasks_module_does_not_import_llm_clients():
 
 def test_tasks_module_does_not_import_brightbean_analytics():
     import apps.slack_bot.tasks as tasks_mod
-    source = open(tasks_mod.__file__).read()
+    with open(tasks_mod.__file__) as f:
+        source = f.read()
     assert "apps.analytics" not in source
     assert "AnalyticsService" not in source
 
@@ -385,6 +388,7 @@ def test_background_task_uses_delivery_callback():
 
     # The __wrapped__ attribute exposes the original function before
     # @background decoration.  We verify the import exists.
-    source = open(tasks_mod.__file__).read()
+    with open(tasks_mod.__file__) as f:
+        source = f.read()
     assert "deliver_slack_response" in source
     assert "deliver_response=deliver_slack_response" in source

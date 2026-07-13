@@ -164,9 +164,9 @@ def test_response_is_simple_bot_response():
 # Edge cases
 # ===========================================================================
 
-def test_empty_string_falls_to_analytics_placeholder():
-    """Empty text is not greeting/help/status → analytics_placeholder."""
-    result = route_simple_command(_make_request(""))
+def test_whitespace_only_falls_to_analytics_placeholder():
+    """Whitespace-only text is not greeting/help/status → analytics_placeholder."""
+    result = route_simple_command(_make_request("   "))
     assert result.response_type == "analytics_placeholder"
 
 
@@ -187,7 +187,8 @@ def test_greeting_with_leading_trailing_whitespace():
 def test_routing_module_does_not_import_slack_sdk():
     """routing.py should not import any Slack Web API client."""
     import apps.slack_bot.routing as routing_mod
-    source = open(routing_mod.__file__).read()
+    with open(routing_mod.__file__) as f:
+        source = f.read()
     assert "slack_sdk" not in source
     assert "WebClient" not in source
     assert "from slack" not in source
@@ -196,7 +197,8 @@ def test_routing_module_does_not_import_slack_sdk():
 def test_routing_module_does_not_import_llm_clients():
     """routing.py should not import Claude/Z.AI/GLM clients."""
     import apps.slack_bot.routing as routing_mod
-    source = open(routing_mod.__file__).read()
+    with open(routing_mod.__file__) as f:
+        source = f.read()
     assert "anthropic" not in source
     assert "openai" not in source
     assert "zhipuai" not in source
@@ -206,7 +208,8 @@ def test_routing_module_does_not_import_llm_clients():
 def test_routing_module_does_not_import_brightbean_analytics():
     """routing.py should not import BrightBean analytics services."""
     import apps.slack_bot.routing as routing_mod
-    source = open(routing_mod.__file__).read()
+    with open(routing_mod.__file__) as f:
+        source = f.read()
     assert "apps.analytics" not in source
     assert "fetch_analytics" not in source
     assert "AnalyticsService" not in source
