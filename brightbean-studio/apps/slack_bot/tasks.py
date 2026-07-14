@@ -16,6 +16,7 @@ from typing import Any, Callable, Dict, Optional
 from background_task import background
 
 from .constants import (
+    RESPONSE_TYPE_NO_RESPONSE,
     STATUS_FAILED,
     STATUS_IGNORED,
     STATUS_PROCESSING,
@@ -147,7 +148,22 @@ def process_inbound_event(
             error=f"Routing error: {exc}",
         )
 
-    # --- 6. Deliver (if callback provided) ---
+    # --- 6. No-response → skip delivery, mark IGNORED ---
+    if response.response_type == RESPONSE_TYPE_NO_RESPONSE or not response.text:
+        logger.info(
+            "Event routed to no_response: event_id=%s response_type=%s",
+            event_id, response.response_type,
+        )
+        event.status = STATUS_IGNORED
+        event.save(update_fields=["status", "updated_at"])
+        return ProcessingResult(
+            ok=True,
+            status=RESULT_IGNORED,
+            event_id=event_id,
+            response_type=response.response_type,
+        )
+
+    # --- 7. Deliver (if callback provided) ---
     if deliver_response is not None:
         try:
             response_ts = deliver_response(
@@ -189,7 +205,7 @@ def process_inbound_event(
             response_ts=ts_str,
         )
 
-    # --- 7. No delivery callback ---
+    # --- 8. No delivery callback ---
     # Leave status as PROCESSING so a future delivery phase can pick it up.
     # This makes the event visible as "in progress" and prevents accidental
     # re-processing by the already-responded guard.

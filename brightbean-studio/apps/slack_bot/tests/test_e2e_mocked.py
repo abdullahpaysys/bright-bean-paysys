@@ -21,15 +21,13 @@ from django.urls import reverse
 from unittest.mock import patch
 
 from apps.slack_bot.constants import (
-    STATUS_FAILED,
     STATUS_IGNORED,
     STATUS_RESPONDED,
 )
 from apps.slack_bot.models import SlackInboundEvent
 from apps.slack_bot.tasks import (
-    RESULT_DELIVERED,
-    RESULT_FAILED,
     RESULT_IGNORED,
+    RESULT_FAILED,
     process_inbound_event,
 )
 from apps.slack_bot.tests.conftest import signed_slack_headers
@@ -250,51 +248,50 @@ def test_e2e_invalid_json_does_not_enqueue():
 
 @pytest.mark.django_db
 def test_e2e_greeting_full_pipeline():
-    """Greeting message → normalize → route → deliver → RESPONDED."""
+    """Greeting message → normalize → route → no_response → IGNORED."""
     event = _create_event(event_id="Ev_e2e_greet", message_text="<@B123> hello")
     delivery = _fake_delivery()
 
     result = process_inbound_event(event.event_id, deliver_response=delivery)
 
     assert result.ok is True
-    assert result.status == RESULT_DELIVERED
+    assert result.status == RESULT_IGNORED
     event.refresh_from_db()
-    assert event.status == STATUS_RESPONDED
-    assert len(delivery.calls) == 1
-    assert delivery.calls[0]["channel_id"] == "C123"
+    assert event.status == STATUS_IGNORED
+    assert len(delivery.calls) == 0
 
 
 @pytest.mark.django_db
 def test_e2e_help_full_pipeline():
-    """Help command → normalize → route → deliver → RESPONDED."""
+    """Help command → normalize → route → no_response → IGNORED."""
     event = _create_event(event_id="Ev_e2e_help", message_text="<@B123> help")
     delivery = _fake_delivery()
 
     result = process_inbound_event(event.event_id, deliver_response=delivery)
 
     assert result.ok is True
-    assert result.status == RESULT_DELIVERED
+    assert result.status == RESULT_IGNORED
     event.refresh_from_db()
-    assert event.status == STATUS_RESPONDED
+    assert event.status == STATUS_IGNORED
 
 
 @pytest.mark.django_db
 def test_e2e_status_full_pipeline():
-    """Status command → normalize → route → deliver → RESPONDED."""
+    """Status command → normalize → route → no_response → IGNORED."""
     event = _create_event(event_id="Ev_e2e_status", message_text="<@B123> status")
     delivery = _fake_delivery()
 
     result = process_inbound_event(event.event_id, deliver_response=delivery)
 
     assert result.ok is True
-    assert result.status == RESULT_DELIVERED
+    assert result.status == RESULT_IGNORED
     event.refresh_from_db()
-    assert event.status == STATUS_RESPONDED
+    assert event.status == STATUS_IGNORED
 
 
 @pytest.mark.django_db
-def test_e2e_analytics_placeholder_full_pipeline():
-    """Analytics query → normalize → route → analytics_placeholder → RESPONDED."""
+def test_e2e_analytics_query_full_pipeline():
+    """Analytics query → normalize → route → no_response → IGNORED."""
     event = _create_event(
         event_id="Ev_e2e_analytics",
         message_text="<@B123> analytics for facebook",
@@ -304,15 +301,15 @@ def test_e2e_analytics_placeholder_full_pipeline():
     result = process_inbound_event(event.event_id, deliver_response=delivery)
 
     assert result.ok is True
-    assert result.status == RESULT_DELIVERED
-    assert result.response_type == "analytics_placeholder"
+    assert result.status == RESULT_IGNORED
+    assert result.response_type == "no_response"
     event.refresh_from_db()
-    assert event.status == STATUS_RESPONDED
+    assert event.status == STATUS_IGNORED
 
 
 @pytest.mark.django_db
-def test_e2e_delivery_failure_marks_failed():
-    """If the delivery callback raises, the event is marked FAILED."""
+def test_e2e_delivery_not_called_for_no_response():
+    """All routes return no_response, so delivery is never called."""
     event = _create_event(event_id="Ev_e2e_fail", message_text="<@B123> hello")
 
     def _bad_delivery(**kwargs):
@@ -321,10 +318,10 @@ def test_e2e_delivery_failure_marks_failed():
 
     result = process_inbound_event(event.event_id, deliver_response=_bad_delivery)
 
-    assert result.ok is False
-    assert result.status == RESULT_FAILED
+    assert result.ok is True
+    assert result.status == RESULT_IGNORED
     event.refresh_from_db()
-    assert event.status == STATUS_FAILED
+    assert event.status == STATUS_IGNORED
 
 
 @pytest.mark.django_db
@@ -399,9 +396,9 @@ def test_e2e_log_processing_contains_event_id(caplog):
 
 @pytest.mark.django_db
 def test_e2e_log_delivery_failure_contains_event_id(caplog):
-    """On delivery failure, logs must contain the event_id."""
+    """Processing logs must contain the event_id even for no_response."""
     event = _create_event(event_id="Ev_log_fail", message_text="<@B123> hello")
-    caplog.set_level(logging.ERROR, logger="apps.slack_bot.tasks")
+    caplog.set_level(logging.INFO, logger="apps.slack_bot.tasks")
 
     def _bad_delivery(**kwargs):
         from apps.slack_bot.exceptions import SlackDeliveryError

@@ -3,11 +3,9 @@
 Receives a normalized ``SlackAnalyticsRequest`` and returns a
 ``SimpleBotResponse`` with a response type and text.
 
-Supported routes:
-- greeting (hi, hello, hey, salam, …)
-- help (help, what can you do, commands, examples)
-- status (status, connected accounts, connections, account status)
-- analytics_placeholder (everything else with meaningful text)
+All current routes return ``no_response`` with empty text.
+User-facing responses will be implemented during LLM + BrightBean
+analytics integration.
 """
 
 from __future__ import annotations
@@ -15,12 +13,7 @@ from __future__ import annotations
 import re
 from dataclasses import dataclass, field
 
-from .constants import (
-    RESPONSE_TYPE_ANALYTICS_PLACEHOLDER,
-    RESPONSE_TYPE_GREETING,
-    RESPONSE_TYPE_HELP,
-    RESPONSE_TYPE_STATUS,
-)
+from .constants import RESPONSE_TYPE_NO_RESPONSE
 from .normalization import SlackAnalyticsRequest
 
 # ---------------------------------------------------------------------------
@@ -38,7 +31,7 @@ class SimpleBotResponse:
 
 
 # ---------------------------------------------------------------------------
-# Command keyword sets
+# Command keyword sets (retained for future LLM routing context)
 # ---------------------------------------------------------------------------
 
 _GREETING_KEYWORDS = frozenset({
@@ -52,31 +45,6 @@ _HELP_KEYWORDS = frozenset({
 _STATUS_KEYWORDS = frozenset({
     "status", "connected accounts", "connections", "account status",
 })
-
-# ---------------------------------------------------------------------------
-# Response texts
-# ---------------------------------------------------------------------------
-
-_GREETING_TEXT = "Hi. Ask me about Instagram, Facebook, or LinkedIn analytics."
-
-_HELP_TEXT = (
-    "I can help with Instagram, Facebook, and LinkedIn analytics.\n\n"
-    "Examples:\n"
-    "- top Instagram post this week\n"
-    "- compare Facebook and Instagram engagement last 30 days\n"
-    "- LinkedIn follower growth this month\n"
-    "- Facebook reach last 7 days"
-)
-
-_STATUS_TEXT = (
-    "Status check placeholder. "
-    "BrightBean account-status integration will be added later."
-)
-
-_ANALYTICS_PLACEHOLDER_TEXT = (
-    "Analytics pipeline placeholder. "
-    "LLM and BrightBean analytics integration will be added by the teammate branch."
-)
 
 
 # ---------------------------------------------------------------------------
@@ -112,33 +80,10 @@ def is_status_command(text: str) -> bool:
 def route_simple_command(request: SlackAnalyticsRequest) -> SimpleBotResponse:
     """Route a normalized Slack analytics request to a simple response.
 
-    Matching is deterministic and case-insensitive:
-    1. greeting keywords → greeting response
-    2. help keywords → help response
-    3. status keywords → status placeholder
-    4. anything else → analytics placeholder
+    Currently all routes return ``no_response`` with empty text.
+    Keyword classification helpers are retained for future LLM routing.
     """
-    text = request.text
-
-    if is_greeting(text):
-        return SimpleBotResponse(
-            response_type=RESPONSE_TYPE_GREETING,
-            text=_GREETING_TEXT,
-        )
-
-    if is_help_command(text):
-        return SimpleBotResponse(
-            response_type=RESPONSE_TYPE_HELP,
-            text=_HELP_TEXT,
-        )
-
-    if is_status_command(text):
-        return SimpleBotResponse(
-            response_type=RESPONSE_TYPE_STATUS,
-            text=_STATUS_TEXT,
-        )
-
     return SimpleBotResponse(
-        response_type=RESPONSE_TYPE_ANALYTICS_PLACEHOLDER,
-        text=_ANALYTICS_PLACEHOLDER_TEXT,
+        response_type=RESPONSE_TYPE_NO_RESPONSE,
+        text="",
     )

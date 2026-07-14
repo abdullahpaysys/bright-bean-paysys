@@ -52,18 +52,18 @@ def test_normalize_command_text_strips_whitespace():
 @pytest.mark.parametrize("text", ["hi", "hello", "hey", "salam", "assalam o alaikum"])
 def test_greeting_variants(text):
     result = route_simple_command(_make_request(text))
-    assert result.response_type == "greeting"
-    assert len(result.text) > 0
+    assert result.response_type == "no_response"
+    assert result.text == ""
 
 
 def test_greeting_with_punctuation():
     result = route_simple_command(_make_request("hello!"))
-    assert result.response_type == "greeting"
+    assert result.response_type == "no_response"
 
 
 def test_greeting_uppercase():
     result = route_simple_command(_make_request("HI"))
-    assert result.response_type == "greeting"
+    assert result.response_type == "no_response"
 
 
 def test_is_greeting_helper():
@@ -79,13 +79,13 @@ def test_is_greeting_helper():
 @pytest.mark.parametrize("text", ["help", "what can you do", "commands", "examples"])
 def test_help_variants(text):
     result = route_simple_command(_make_request(text))
-    assert result.response_type == "help"
-    assert "Examples:" in result.text
+    assert result.response_type == "no_response"
+    assert result.text == ""
 
 
 def test_help_with_punctuation():
     result = route_simple_command(_make_request("what can you do?"))
-    assert result.response_type == "help"
+    assert result.response_type == "no_response"
 
 
 def test_is_help_command_helper():
@@ -101,8 +101,8 @@ def test_is_help_command_helper():
 @pytest.mark.parametrize("text", ["status", "connected accounts", "connections", "account status"])
 def test_status_variants(text):
     result = route_simple_command(_make_request(text))
-    assert result.response_type == "status"
-    assert "placeholder" in result.text.lower()
+    assert result.response_type == "no_response"
+    assert result.text == ""
 
 
 def test_is_status_command_helper():
@@ -112,7 +112,7 @@ def test_is_status_command_helper():
 
 
 # ===========================================================================
-# Analytics placeholder tests
+# Analytics query tests
 # ===========================================================================
 
 @pytest.mark.parametrize(
@@ -124,10 +124,10 @@ def test_is_status_command_helper():
         "facebook reach last 7 days",
     ],
 )
-def test_analytics_placeholder_variants(text):
+def test_analytics_variants(text):
     result = route_simple_command(_make_request(text))
-    assert result.response_type == "analytics_placeholder"
-    assert "placeholder" in result.text.lower()
+    assert result.response_type == "no_response"
+    assert result.text == ""
 
 
 # ===========================================================================
@@ -139,9 +139,9 @@ def test_response_has_response_type():
     assert hasattr(result, "response_type")
 
 
-def test_response_has_nonempty_text():
+def test_response_has_empty_text():
     result = route_simple_command(_make_request("hi"))
-    assert len(result.text) > 0
+    assert result.text == ""
 
 
 def test_response_metadata_defaults_to_dict():
@@ -164,20 +164,20 @@ def test_response_is_simple_bot_response():
 # Edge cases
 # ===========================================================================
 
-def test_empty_string_falls_to_analytics_placeholder():
-    """Empty text is not greeting/help/status → analytics_placeholder."""
+def test_empty_string_returns_no_response():
+    """Empty text → no_response."""
     result = route_simple_command(_make_request(""))
-    assert result.response_type == "analytics_placeholder"
+    assert result.response_type == "no_response"
 
 
-def test_unknown_command_falls_to_analytics_placeholder():
+def test_unknown_command_returns_no_response():
     result = route_simple_command(_make_request("some random question about twitter"))
-    assert result.response_type == "analytics_placeholder"
+    assert result.response_type == "no_response"
 
 
 def test_greeting_with_leading_trailing_whitespace():
     result = route_simple_command(_make_request("  hey  "))
-    assert result.response_type == "greeting"
+    assert result.response_type == "no_response"
 
 
 # ===========================================================================
