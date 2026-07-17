@@ -22,10 +22,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 from django.test import Client, override_settings
 
-from apps.slack_bot.access_provisioning import (
-    ProvisioningResult,
-    ProvisioningStatus,
-)
+from apps.slack_bot.bot_grant_service import BotGrantResult
 from apps.slack_bot.constants import (
     ACCESS_STATUS_APPROVED,
     ACCESS_STATUS_REVOKED,
@@ -230,17 +227,14 @@ def _setup_mocks(mocks):
 
 def _provision_side_effect(
     *,
-    email="user@example.com",
     workspace_name="Test WS",
 ):
-    """Return a side_effect function for grant_slack_analytics_access mock."""
+    """Return a side_effect function for grant_bot_access mock."""
     def _effect(
         *,
-        approving_slack_user_id,
         team_id,
-        source_channel_id,
         target_slack_user_id,
-        brightbean_email=None,
+        approving_slack_user_id,
     ):
         access = BotUserAccess.objects.filter(
             workspace_id=team_id, slack_user_id=target_slack_user_id,
@@ -260,12 +254,10 @@ def _provision_side_effect(
                 action=AUDIT_ACCESS_GRANTED,
                 metadata={},
             )
-            return ProvisioningResult(
-                status=ProvisioningStatus.NEWLY_PROVISIONED,
+            return BotGrantResult(
+                action="granted",
                 target_slack_user_id=target_slack_user_id,
-                brightbean_email=brightbean_email or email,
                 workspace_name=workspace_name,
-                bot_access_action="created",
             )
         if access.status == ACCESS_STATUS_REVOKED:
             access.status = ACCESS_STATUS_APPROVED
@@ -278,17 +270,14 @@ def _provision_side_effect(
                 action=AUDIT_ACCESS_RESTORED,
                 metadata={},
             )
-            return ProvisioningResult(
-                status=ProvisioningStatus.RESTORED,
+            return BotGrantResult(
+                action="restored",
                 target_slack_user_id=target_slack_user_id,
-                brightbean_email=brightbean_email or email,
                 workspace_name=workspace_name,
-                bot_access_action="restored",
             )
-        return ProvisioningResult(
-            status=ProvisioningStatus.ALREADY_PROVISIONED,
+        return BotGrantResult(
+            action="already_approved",
             target_slack_user_id=target_slack_user_id,
-            brightbean_email=brightbean_email or email,
             workspace_name=workspace_name,
         )
     return _effect

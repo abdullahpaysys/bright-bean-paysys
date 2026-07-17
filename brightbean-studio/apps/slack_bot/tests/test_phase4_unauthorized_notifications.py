@@ -47,12 +47,10 @@ from apps.slack_bot.constants import (
     ACCESS_STATUS_APPROVED,
     ACCESS_STATUS_REVOKED,
     ADMIN_STATUS_ACTIVE,
-    ADMIN_STATUS_INACTIVE,
     AUDIT_ADMIN_NOTIFICATION_SENT,
     AUDIT_ADMIN_NOTIFICATION_SUPPRESSED,
     AUDIT_UNAUTHORIZED_ACCESS_ATTEMPT,
     PERMISSION_READ_ONLY,
-    STATUS_IGNORED,
 )
 from apps.slack_bot.delivery import SlackDeliveryResult
 from apps.slack_bot.models import (
@@ -65,7 +63,6 @@ from apps.slack_bot.models import (
 from apps.slack_bot.tests.conftest import signed_slack_headers
 from apps.slack_bot.unauthorized_notification_service import (
     GENERIC_CHANNEL_RESPONSE,
-    USER_DM_TEXT,
     UnauthorizedNotificationResult,
     classify_user,
     format_admin_notification_dm,
@@ -1007,36 +1004,26 @@ def test_approved_thread_reply_normal_flow(mock_send_notif, mock_reaction, mock_
 @patch("apps.slack_bot.admin_dm_service.send_user_confirmation_dm")
 @patch("apps.slack_bot.views.send_slack_message")
 @patch("apps.slack_bot.unauthorized_notification_service.send_slack_message")
-def test_admin_dm_grant_still_works(mock_send_notif, mock_send_view, mock_conf, mock_provision):
-    from apps.slack_bot.access_provisioning import (
-        ProvisioningResult,
-        ProvisioningStatus,
-    )
+def test_admin_dm_grant_still_works(mock_send_notif, mock_send_view, mock_conf, mock_grant):
+    from apps.slack_bot.bot_grant_service import BotGrantResult
     mock_send_view.return_value = MagicMock(ok=True, response_ts="ts")
     mock_send_notif.return_value = _ok_result()
     mock_conf.return_value = True
 
-    def _prov_effect(*, approving_slack_user_id, team_id, source_channel_id, target_slack_user_id, brightbean_email=None):
+    def _grant_effect(*, team_id, target_slack_user_id, approving_slack_user_id):
         BotUserAccess.objects.create(
             workspace_id=team_id, slack_user_id=target_slack_user_id,
             status="APPROVED", permission="READ_ONLY",
             granted_by_slack_user_id=approving_slack_user_id,
         )
-        return ProvisioningResult(
-            status=ProvisioningStatus.NEWLY_PROVISIONED,
+        return BotGrantResult(
+            action="granted",
             target_slack_user_id=target_slack_user_id,
-            brightbean_email=brightbean_email or "user@example.com",
             workspace_name="Test WS",
         )
-    mock_provision.side_effect = _prov_effect
+    mock_grant.side_effect = _grant_effect
 
     _create_admin("TTEST123", "UADMIN123")
-    # Create UnauthorizedAccessAttempt so source channel can be resolved
-    from apps.slack_bot.models import UnauthorizedAccessAttempt
-    UnauthorizedAccessAttempt.objects.create(
-        workspace_id="TTEST123", slack_user_id="U08ABC123",
-        last_source_channel_id="C123", attempt_count=1,
-    )
     client = Client()
     response = _post(client, _dm_payload(text="Give U08ABC123 access"))
     assert response.status_code == 200

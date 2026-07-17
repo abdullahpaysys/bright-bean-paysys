@@ -17,33 +17,24 @@ from unittest.mock import MagicMock, patch
 import pytest
 from django.test import Client, override_settings
 
-from apps.slack_bot.access_provisioning import (
-    ProvisioningFailureReason,
-    ProvisioningResult,
-    ProvisioningStatus,
-)
 from apps.slack_bot.access_service import (
     BulkGrantResult,
     GrantResult,
-    grant_user_access,
 )
 from apps.slack_bot.admin_dm_parser import (
-    GrantCommandEntry,
-    GrantCommandResult,
-    USAGE_MESSAGE,
     parse_grant_command,
 )
 from apps.slack_bot.admin_dm_response import (
     format_bulk_grant_response,
-    format_bulk_provisioning_response,
-    format_provisioning_response,
     format_single_grant_response,
 )
 from apps.slack_bot.admin_dm_service import (
-    AdminDMResult,
     is_active_admin,
     is_direct_message_channel,
     process_admin_dm,
+)
+from apps.slack_bot.bot_grant_service import (
+    BotGrantResult,
 )
 from apps.slack_bot.constants import (
     ACCESS_STATUS_APPROVED,
@@ -55,7 +46,6 @@ from apps.slack_bot.constants import (
 from apps.slack_bot.models import (
     BotAdministrator,
     BotUserAccess,
-    SlackInboundEvent,
     UnauthorizedAccessAttempt,
 )
 from apps.slack_bot.tests.conftest import signed_slack_headers
@@ -150,22 +140,19 @@ def _create_unauthorized_attempt(
     )
 
 
-def _provision_side_effect(
+def _grant_side_effect(
     *,
-    status=ProvisioningStatus.NEWLY_PROVISIONED,
-    email="user@example.com",
+    action="granted",
     workspace_name="Test WS",
 ):
-    """Return a side_effect function for grant_slack_analytics_access mock."""
+    """Return a side_effect function for grant_bot_access mock."""
     def _effect(
         *,
-        approving_slack_user_id,
         team_id,
-        source_channel_id,
         target_slack_user_id,
-        brightbean_email=None,
+        approving_slack_user_id,
     ):
-        if status == ProvisioningStatus.NEWLY_PROVISIONED:
+        if action == "granted":
             BotUserAccess.objects.create(
                 workspace_id=team_id,
                 slack_user_id=target_slack_user_id,
@@ -173,22 +160,17 @@ def _provision_side_effect(
                 permission=PERMISSION_READ_ONLY,
                 granted_by_slack_user_id=approving_slack_user_id,
             )
-        elif status == ProvisioningStatus.RESTORED:
+        elif action == "restored":
             access = BotUserAccess.objects.get(
                 workspace_id=team_id, slack_user_id=target_slack_user_id,
             )
             access.status = ACCESS_STATUS_APPROVED
             access.granted_by_slack_user_id = approving_slack_user_id
             access.save(update_fields=["status", "granted_by_slack_user_id"])
-        return ProvisioningResult(
-            status=status,
+        return BotGrantResult(
+            action=action,
             target_slack_user_id=target_slack_user_id,
-            brightbean_email=brightbean_email or email,
             workspace_name=workspace_name,
-            bot_access_action="created" if status == ProvisioningStatus.NEWLY_PROVISIONED else "restored",
-            mapping_action="created",
-            org_membership_action="created",
-            ws_membership_action="created",
         )
     return _effect
 
@@ -340,15 +322,19 @@ def test_is_active_admin_false_no_admin():
 @pytest.mark.django_db
 @patch("apps.slack_bot.admin_dm_service.grant_slack_analytics_access")
 @patch("apps.slack_bot.admin_dm_service.send_user_confirmation_dm")
-def test_admin_dm_single_grant(mock_conf, mock_provision):
+def test_admin_dm_single_grant(mock_conf, mock_grant):
     mock_conf.return_value = True
-    mock_provision.side_effect = _provision_side_effect()
+    mock_grant.side_effect = _grant_side_effect()
     _create_admin("TTEST123", "UADMIN123")
     _create_unauthorized_attempt("TTEST123", "U08ABC123", "C123")
     result = process_admin_dm("TTEST123", "UADMIN123", "Give U08ABC123 access")
     assert result.is_admin_dm is True
     assert result.handled is True
     assert "Access granted" in result.response_text
+    assert "Member: U08ABC123" in result.response_text
+    assert "Workspace: Test WS" in result.response_text
+    assert "Analytics read-only" in result.response_text
+    assert "Status: Approved" in result.response_text
     assert BotUserAccess.objects.filter(
         workspace_id="TTEST123", slack_user_id="U08ABC123",
         status="APPROVED",
@@ -358,9 +344,9 @@ def test_admin_dm_single_grant(mock_conf, mock_provision):
 @pytest.mark.django_db
 @patch("apps.slack_bot.admin_dm_service.grant_slack_analytics_access")
 @patch("apps.slack_bot.admin_dm_service.send_user_confirmation_dm")
-def test_admin_dm_bulk_grant(mock_conf, mock_provision):
+def test_admin_dm_bulk_grant(mock_conf, mock_grant):
     mock_conf.return_value = True
-    mock_provision.side_effect = _provision_side_effect()
+    mock_grant.side_effect = _grant_side_effect()
     _create_admin("TTEST123", "UADMIN123")
     for uid in ("U08ABC123", "U08DEF456", "U08GHI789"):
         _create_unauthorized_attempt("TTEST123", uid, "C123")
@@ -376,9 +362,9 @@ def test_admin_dm_bulk_grant(mock_conf, mock_provision):
 @pytest.mark.django_db
 @patch("apps.slack_bot.admin_dm_service.grant_slack_analytics_access")
 @patch("apps.slack_bot.admin_dm_service.send_user_confirmation_dm")
-def test_admin_dm_already_approved(mock_conf, mock_provision):
+def test_admin_dm_already_approved(mock_conf, mock_grant):
     mock_conf.return_value = True
-    mock_provision.side_effect = _provision_side_effect(status=ProvisioningStatus.ALREADY_PROVISIONED)
+    mock_grant.side_effect = _grant_side_effect(action="already_approved")
     _create_admin("TTEST123", "UADMIN123")
     _create_approved_user("TTEST123", "U08ABC123")
     _create_unauthorized_attempt("TTEST123", "U08ABC123", "C123")
@@ -390,9 +376,9 @@ def test_admin_dm_already_approved(mock_conf, mock_provision):
 @pytest.mark.django_db
 @patch("apps.slack_bot.admin_dm_service.grant_slack_analytics_access")
 @patch("apps.slack_bot.admin_dm_service.send_user_confirmation_dm")
-def test_admin_dm_revoked_restored(mock_conf, mock_provision):
+def test_admin_dm_revoked_restored(mock_conf, mock_grant):
     mock_conf.return_value = True
-    mock_provision.side_effect = _provision_side_effect(status=ProvisioningStatus.RESTORED)
+    mock_grant.side_effect = _grant_side_effect(action="restored")
     _create_admin("TTEST123", "UADMIN123")
     BotUserAccess.objects.create(
         workspace_id="TTEST123",
@@ -419,9 +405,9 @@ def test_admin_dm_invalid_ids_reported():
 @pytest.mark.django_db
 @patch("apps.slack_bot.admin_dm_service.grant_slack_analytics_access")
 @patch("apps.slack_bot.admin_dm_service.send_user_confirmation_dm")
-def test_admin_dm_mixed_valid_invalid(mock_conf, mock_provision):
+def test_admin_dm_mixed_valid_invalid(mock_conf, mock_grant):
     mock_conf.return_value = True
-    mock_provision.side_effect = _provision_side_effect()
+    mock_grant.side_effect = _grant_side_effect()
     _create_admin("TTEST123", "UADMIN123")
     _create_unauthorized_attempt("TTEST123", "U08ABC123", "C123")
     result = process_admin_dm(
@@ -469,6 +455,7 @@ def test_admin_dm_no_admin_blocked():
 
 
 @pytest.mark.django_db
+@override_settings(ADMIN_LLM_CHAT_ENABLED="false")
 def test_admin_dm_no_grant_intent():
     _create_admin("TTEST123", "UADMIN123")
     result = process_admin_dm("TTEST123", "UADMIN123", "Hello bot")
@@ -487,9 +474,9 @@ def test_admin_dm_grant_no_ids_returns_usage():
 @pytest.mark.django_db
 @patch("apps.slack_bot.admin_dm_service.grant_slack_analytics_access")
 @patch("apps.slack_bot.admin_dm_service.send_user_confirmation_dm")
-def test_admin_dm_grant_performer_is_admin(mock_conf, mock_provision):
+def test_admin_dm_grant_performer_is_admin(mock_conf, mock_grant):
     mock_conf.return_value = True
-    mock_provision.side_effect = _provision_side_effect()
+    mock_grant.side_effect = _grant_side_effect()
     _create_admin("TTEST123", "UADMIN123")
     _create_unauthorized_attempt("TTEST123", "U08ABC123", "C123")
     process_admin_dm("TTEST123", "UADMIN123", "Give U08ABC123 access")
@@ -509,10 +496,10 @@ def test_admin_dm_grant_performer_is_admin(mock_conf, mock_provision):
 @patch("apps.slack_bot.admin_dm_service.send_user_confirmation_dm")
 @patch("apps.slack_bot.admin_dm_service.grant_slack_analytics_access")
 @patch("apps.slack_bot.views.send_slack_message")
-def test_admin_dm_single_grant_via_endpoint(mock_send, mock_provision, mock_conf):
+def test_admin_dm_single_grant_via_endpoint(mock_send, mock_grant, mock_conf):
     mock_send.return_value = MagicMock(ok=True, response_ts="ts")
     mock_conf.return_value = True
-    mock_provision.side_effect = _provision_side_effect()
+    mock_grant.side_effect = _grant_side_effect()
     _create_admin("TTEST123", "UADMIN123")
     _create_unauthorized_attempt("TTEST123", "U08ABC123", "C123")
     client = Client()
@@ -530,10 +517,10 @@ def test_admin_dm_single_grant_via_endpoint(mock_send, mock_provision, mock_conf
 @patch("apps.slack_bot.admin_dm_service.send_user_confirmation_dm")
 @patch("apps.slack_bot.admin_dm_service.grant_slack_analytics_access")
 @patch("apps.slack_bot.views.send_slack_message")
-def test_admin_dm_bulk_grant_via_endpoint(mock_send, mock_provision, mock_conf):
+def test_admin_dm_bulk_grant_via_endpoint(mock_send, mock_grant, mock_conf):
     mock_send.return_value = MagicMock(ok=True, response_ts="ts")
     mock_conf.return_value = True
-    mock_provision.side_effect = _provision_side_effect()
+    mock_grant.side_effect = _grant_side_effect()
     _create_admin("TTEST123", "UADMIN123")
     for uid in ("U08ABC123", "U08DEF456"):
         _create_unauthorized_attempt("TTEST123", uid, "C123")
@@ -569,10 +556,10 @@ def test_non_admin_dm_blocked(mock_send):
 @patch("apps.slack_bot.views.enqueue_inbound_event")
 @patch("apps.slack_bot.views.add_processing_reaction")
 @patch("apps.slack_bot.views.send_slack_message")
-def test_admin_dm_does_not_enqueue(mock_send, mock_reaction, mock_enqueue, mock_provision, mock_conf):
+def test_admin_dm_does_not_enqueue(mock_send, mock_reaction, mock_enqueue, mock_grant, mock_conf):
     mock_send.return_value = MagicMock(ok=True, response_ts="ts")
     mock_conf.return_value = True
-    mock_provision.side_effect = _provision_side_effect()
+    mock_grant.side_effect = _grant_side_effect()
     _create_admin("TTEST123", "UADMIN123")
     _create_unauthorized_attempt("TTEST123", "U08ABC123", "C123")
     client = Client()
@@ -586,10 +573,10 @@ def test_admin_dm_does_not_enqueue(mock_send, mock_reaction, mock_enqueue, mock_
 @patch("apps.slack_bot.admin_dm_service.send_user_confirmation_dm")
 @patch("apps.slack_bot.admin_dm_service.grant_slack_analytics_access")
 @patch("apps.slack_bot.views.send_slack_message")
-def test_admin_dm_duplicate_does_not_grant_twice(mock_send, mock_provision, mock_conf):
+def test_admin_dm_duplicate_does_not_grant_twice(mock_send, mock_grant, mock_conf):
     mock_send.return_value = MagicMock(ok=True, response_ts="ts")
     mock_conf.return_value = True
-    mock_provision.side_effect = _provision_side_effect()
+    mock_grant.side_effect = _grant_side_effect()
     _create_admin("TTEST123", "UADMIN123")
     _create_unauthorized_attempt("TTEST123", "U08ABC123", "C123")
     client = Client()
@@ -617,7 +604,7 @@ def test_admin_dm_usage_response_no_ids(mock_send):
 
 
 @pytest.mark.django_db
-@override_settings(SLACK_SIGNING_SECRET=SECRET)
+@override_settings(SLACK_SIGNING_SECRET=SECRET, ADMIN_LLM_CHAT_ENABLED="false")
 @patch("apps.slack_bot.views.send_slack_message")
 def test_admin_dm_unrecognized_command(mock_send):
     mock_send.return_value = MagicMock(ok=True, response_ts="ts")
@@ -633,12 +620,12 @@ def test_admin_dm_unrecognized_command(mock_send):
 @patch("apps.slack_bot.admin_dm_service.send_user_confirmation_dm")
 @patch("apps.slack_bot.admin_dm_service.grant_slack_analytics_access")
 @patch("apps.slack_bot.views.send_slack_message")
-def test_slack_response_failure_does_not_rollback(mock_send, mock_provision, mock_conf):
+def test_slack_response_failure_does_not_rollback(mock_send, mock_grant, mock_conf):
     """Access grant is committed even if Slack response delivery fails."""
     from apps.slack_bot.exceptions import SlackDeliveryError
     mock_send.side_effect = SlackDeliveryError("delivery failed")
     mock_conf.return_value = True
-    mock_provision.side_effect = _provision_side_effect()
+    mock_grant.side_effect = _grant_side_effect()
     _create_admin("TTEST123", "UADMIN123")
     _create_unauthorized_attempt("TTEST123", "U08ABC123", "C123")
     client = Client()

@@ -33,21 +33,19 @@ Tests cover:
 
 from __future__ import annotations
 
-from unittest.mock import MagicMock, patch
+from unittest.mock import patch
 
 import pytest
+from django.test import override_settings
+from django.utils import timezone
 
-from apps.slack_bot.access_provisioning import (
-    ProvisioningFailureReason,
-    ProvisioningResult,
-    ProvisioningStatus,
-)
 from apps.slack_bot.admin_dm_parser import parse_grant_command
 from apps.slack_bot.admin_dm_response import (
-    format_bulk_provisioning_response,
-    format_provisioning_response,
+    format_bot_grant_response,
+    format_bulk_bot_grant_response,
 )
 from apps.slack_bot.admin_dm_service import process_admin_dm
+from apps.slack_bot.bot_grant_service import BotGrantResult
 from apps.slack_bot.constants import (
     ACCESS_STATUS_APPROVED,
     ADMIN_STATUS_ACTIVE,
@@ -63,9 +61,7 @@ from apps.slack_bot.unauthorized_notification_service import (
 )
 from apps.slack_bot.user_confirmation_service import (
     USER_CONFIRMATION_DM_TEXT,
-    send_user_confirmation_dm,
 )
-from django.utils import timezone
 
 pytestmark = pytest.mark.django_db
 
@@ -96,22 +92,20 @@ def _create_unauthorized_attempt(
     )
 
 
-def _provision_side_effect(
+def _grant_side_effect(
     *,
-    status=ProvisioningStatus.NEWLY_PROVISIONED,
-    email="user@example.com",
+    action="granted",
     workspace_name="Test WS",
+    failure_reason="",
 ):
-    """Return a side_effect function for grant_slack_analytics_access mock."""
+    """Return a side_effect function for grant_bot_access mock."""
     def _effect(
         *,
-        approving_slack_user_id,
         team_id,
-        source_channel_id,
         target_slack_user_id,
-        brightbean_email=None,
+        approving_slack_user_id,
     ):
-        if status == ProvisioningStatus.NEWLY_PROVISIONED:
+        if action == "granted":
             BotUserAccess.objects.create(
                 workspace_id=team_id,
                 slack_user_id=target_slack_user_id,
@@ -119,15 +113,11 @@ def _provision_side_effect(
                 permission=PERMISSION_READ_ONLY,
                 granted_by_slack_user_id=approving_slack_user_id,
             )
-        return ProvisioningResult(
-            status=status,
+        return BotGrantResult(
+            action=action,
             target_slack_user_id=target_slack_user_id,
-            brightbean_email=brightbean_email or email,
             workspace_name=workspace_name,
-            bot_access_action="created" if status == ProvisioningStatus.NEWLY_PROVISIONED else "",
-            mapping_action="created",
-            org_membership_action="created",
-            ws_membership_action="created",
+            failure_reason=failure_reason,
         )
     return _effect
 
@@ -201,7 +191,7 @@ def test_parser_invalid_ids_reported():
 def test_service_single_provisioning_success(mock_provision, mock_conf):
     """Test 6: Single provisioning success."""
     mock_conf.return_value = True
-    mock_provision.side_effect = _provision_side_effect()
+    mock_provision.side_effect = _grant_side_effect()
     _create_admin("TTEST123", "UADMIN123")
     _create_unauthorized_attempt("TTEST123", "U08ABC123", "C123")
     result = process_admin_dm("TTEST123", "UADMIN123", "Give U08ABC123 access as user@company.com")
@@ -213,41 +203,43 @@ def test_service_single_provisioning_success(mock_provision, mock_conf):
 @patch("apps.slack_bot.admin_dm_service.send_user_confirmation_dm")
 @patch("apps.slack_bot.admin_dm_service.grant_slack_analytics_access")
 def test_service_source_channel_from_attempt(mock_provision, mock_conf):
-    """Test 7: Source channel is resolved from UnauthorizedAccessAttempt."""
+    """Test 7: grant_bot_access is called with correct team_id and target."""
     mock_conf.return_value = True
-    mock_provision.side_effect = _provision_side_effect()
+    mock_provision.side_effect = _grant_side_effect()
     _create_admin("TTEST123", "UADMIN123")
     _create_unauthorized_attempt("TTEST123", "U08ABC123", "C456")
     process_admin_dm("TTEST123", "UADMIN123", "Give U08ABC123 access")
     call_kwargs = mock_provision.call_args.kwargs
-    assert call_kwargs["source_channel_id"] == "C456"
+    assert call_kwargs["team_id"] == "TTEST123"
+    assert call_kwargs["target_slack_user_id"] == "U08ABC123"
 
 
 @patch("apps.slack_bot.admin_dm_service.send_user_confirmation_dm")
 @patch("apps.slack_bot.admin_dm_service.grant_slack_analytics_access")
 def test_service_missing_source_channel_failed(mock_provision, mock_conf):
-    """Test 8: Missing source channel → FAILED result."""
+    """Test 8: Grant succeeds even without a prior UnauthorizedAccessAttempt."""
     mock_conf.return_value = True
-    mock_provision.side_effect = _provision_side_effect()
+    mock_provision.side_effect = _grant_side_effect()
     _create_admin("TTEST123", "UADMIN123")
     # No UnauthorizedAccessAttempt created
     result = process_admin_dm("TTEST123", "UADMIN123", "Give U08ABC123 access")
     assert result.handled is True
-    assert "not granted" in result.response_text.lower()
-    mock_provision.assert_not_called()
+    assert "Access granted" in result.response_text
+    mock_provision.assert_called_once()
 
 
 @patch("apps.slack_bot.admin_dm_service.send_user_confirmation_dm")
 @patch("apps.slack_bot.admin_dm_service.grant_slack_analytics_access")
 def test_service_email_passed_through(mock_provision, mock_conf):
-    """Test 9: Email is passed through to provisioning service."""
+    """Test 9: grant_bot_access is called with correct target_slack_user_id."""
     mock_conf.return_value = True
-    mock_provision.side_effect = _provision_side_effect()
+    mock_provision.side_effect = _grant_side_effect()
     _create_admin("TTEST123", "UADMIN123")
     _create_unauthorized_attempt("TTEST123", "U08ABC123", "C123")
     process_admin_dm("TTEST123", "UADMIN123", "Give U08ABC123 access as user@company.com")
     call_kwargs = mock_provision.call_args.kwargs
-    assert call_kwargs["brightbean_email"] == "user@company.com"
+    assert call_kwargs["target_slack_user_id"] == "U08ABC123"
+    assert call_kwargs["team_id"] == "TTEST123"
 
 
 @patch("apps.slack_bot.admin_dm_service.send_user_confirmation_dm")
@@ -257,23 +249,21 @@ def test_service_bulk_one_failure_does_not_block(mock_provision, mock_conf):
     mock_conf.return_value = True
     call_count = [0]
 
-    def _mixed_effect(*, approving_slack_user_id, team_id, source_channel_id, target_slack_user_id, brightbean_email=None):
+    def _mixed_effect(*, team_id, target_slack_user_id, approving_slack_user_id):
         call_count[0] += 1
         if call_count[0] == 1:
-            return ProvisioningResult(
-                status=ProvisioningStatus.FAILED,
+            return BotGrantResult(
+                action="failed",
                 target_slack_user_id=target_slack_user_id,
-                failure_reason=ProvisioningFailureReason.USER_NOT_FOUND,
-                failure_message="User not found.",
+                failure_reason="User not found.",
             )
         BotUserAccess.objects.create(
             workspace_id=team_id, slack_user_id=target_slack_user_id,
             status=ACCESS_STATUS_APPROVED, permission=PERMISSION_READ_ONLY,
         )
-        return ProvisioningResult(
-            status=ProvisioningStatus.NEWLY_PROVISIONED,
+        return BotGrantResult(
+            action="granted",
             target_slack_user_id=target_slack_user_id,
-            brightbean_email="user2@example.com",
             workspace_name="Test WS",
         )
 
@@ -295,9 +285,9 @@ def test_service_bulk_one_failure_does_not_block(mock_provision, mock_conf):
 @patch("apps.slack_bot.admin_dm_service.send_user_confirmation_dm")
 @patch("apps.slack_bot.admin_dm_service.grant_slack_analytics_access")
 def test_service_confirmation_dm_only_newly_provisioned(mock_provision, mock_conf):
-    """Test 11: Confirmation DM sent only for NEWLY_PROVISIONED."""
+    """Test 11: Confirmation DM sent only for granted."""
     mock_conf.return_value = True
-    mock_provision.side_effect = _provision_side_effect(status=ProvisioningStatus.NEWLY_PROVISIONED)
+    mock_provision.side_effect = _grant_side_effect(action="granted")
     _create_admin("TTEST123", "UADMIN123")
     _create_unauthorized_attempt("TTEST123", "U08ABC123", "C123")
     process_admin_dm("TTEST123", "UADMIN123", "Give U08ABC123 access")
@@ -307,9 +297,9 @@ def test_service_confirmation_dm_only_newly_provisioned(mock_provision, mock_con
 @patch("apps.slack_bot.admin_dm_service.send_user_confirmation_dm")
 @patch("apps.slack_bot.admin_dm_service.grant_slack_analytics_access")
 def test_service_confirmation_dm_for_restored(mock_provision, mock_conf):
-    """Test 12: Confirmation DM sent for RESTORED."""
+    """Test 12: Confirmation DM sent for restored."""
     mock_conf.return_value = True
-    mock_provision.side_effect = _provision_side_effect(status=ProvisioningStatus.RESTORED)
+    mock_provision.side_effect = _grant_side_effect(action="restored")
     _create_admin("TTEST123", "UADMIN123")
     _create_unauthorized_attempt("TTEST123", "U08ABC123", "C123")
     process_admin_dm("TTEST123", "UADMIN123", "Give U08ABC123 access")
@@ -319,9 +309,9 @@ def test_service_confirmation_dm_for_restored(mock_provision, mock_conf):
 @patch("apps.slack_bot.admin_dm_service.send_user_confirmation_dm")
 @patch("apps.slack_bot.admin_dm_service.grant_slack_analytics_access")
 def test_service_confirmation_dm_for_repaired(mock_provision, mock_conf):
-    """Test 13: Confirmation DM sent for REPAIRED."""
+    """Test 13: Confirmation DM sent for granted (formerly REPAIRED)."""
     mock_conf.return_value = True
-    mock_provision.side_effect = _provision_side_effect(status=ProvisioningStatus.REPAIRED)
+    mock_provision.side_effect = _grant_side_effect(action="granted")
     _create_admin("TTEST123", "UADMIN123")
     _create_unauthorized_attempt("TTEST123", "U08ABC123", "C123")
     process_admin_dm("TTEST123", "UADMIN123", "Give U08ABC123 access")
@@ -331,9 +321,9 @@ def test_service_confirmation_dm_for_repaired(mock_provision, mock_conf):
 @patch("apps.slack_bot.admin_dm_service.send_user_confirmation_dm")
 @patch("apps.slack_bot.admin_dm_service.grant_slack_analytics_access")
 def test_service_no_confirmation_dm_already_provisioned(mock_provision, mock_conf):
-    """Test 14: No confirmation DM for ALREADY_PROVISIONED."""
+    """Test 14: No confirmation DM for already_approved."""
     mock_conf.return_value = True
-    mock_provision.side_effect = _provision_side_effect(status=ProvisioningStatus.ALREADY_PROVISIONED)
+    mock_provision.side_effect = _grant_side_effect(action="already_approved")
     _create_admin("TTEST123", "UADMIN123")
     _create_unauthorized_attempt("TTEST123", "U08ABC123", "C123")
     process_admin_dm("TTEST123", "UADMIN123", "Give U08ABC123 access")
@@ -343,9 +333,9 @@ def test_service_no_confirmation_dm_already_provisioned(mock_provision, mock_con
 @patch("apps.slack_bot.admin_dm_service.send_user_confirmation_dm")
 @patch("apps.slack_bot.admin_dm_service.grant_slack_analytics_access")
 def test_service_no_confirmation_dm_failed(mock_provision, mock_conf):
-    """Test 15: No confirmation DM for FAILED."""
+    """Test 15: No confirmation DM for failed."""
     mock_conf.return_value = True
-    mock_provision.side_effect = _provision_side_effect(status=ProvisioningStatus.FAILED)
+    mock_provision.side_effect = _grant_side_effect(action="failed", failure_reason="Some failure.")
     _create_admin("TTEST123", "UADMIN123")
     _create_unauthorized_attempt("TTEST123", "U08ABC123", "C123")
     process_admin_dm("TTEST123", "UADMIN123", "Give U08ABC123 access")
@@ -357,7 +347,7 @@ def test_service_no_confirmation_dm_failed(mock_provision, mock_conf):
 def test_service_email_conflicts_reported(mock_provision, mock_conf):
     """Test 16: Email conflicts are reported in the response."""
     mock_conf.return_value = True
-    mock_provision.side_effect = _provision_side_effect()
+    mock_provision.side_effect = _grant_side_effect()
     _create_admin("TTEST123", "UADMIN123")
     _create_unauthorized_attempt("TTEST123", "U08ABC123", "C123")
     text = (
@@ -376,68 +366,62 @@ def test_service_email_conflicts_reported(mock_provision, mock_conf):
 
 
 def test_response_newly_provisioned():
-    """Test 17: NEWLY_PROVISIONED response format."""
-    result = ProvisioningResult(
-        status=ProvisioningStatus.NEWLY_PROVISIONED,
+    """Test 17: granted response format."""
+    result = BotGrantResult(
+        action="granted",
         target_slack_user_id="U08ABC123",
-        brightbean_email="user@example.com",
         workspace_name="Test WS",
     )
-    text = format_provisioning_response(result)
+    text = format_bot_grant_response(result)
     assert "Access granted" in text
     assert "U08ABC123" in text
-    assert "user@example.com" in text
     assert "Test WS" in text
     assert "Analytics read-only" in text
 
 
 def test_response_already_provisioned():
-    """Test 18: ALREADY_PROVISIONED response format."""
-    result = ProvisioningResult(
-        status=ProvisioningStatus.ALREADY_PROVISIONED,
+    """Test 18: already_approved response format."""
+    result = BotGrantResult(
+        action="already_approved",
         target_slack_user_id="U08ABC123",
-        brightbean_email="user@example.com",
         workspace_name="Test WS",
     )
-    text = format_provisioning_response(result)
+    text = format_bot_grant_response(result)
     assert "No change" in text
     assert "Already approved" in text
 
 
 def test_response_restored():
-    """Test 19: RESTORED response format."""
-    result = ProvisioningResult(
-        status=ProvisioningStatus.RESTORED,
+    """Test 19: restored response format."""
+    result = BotGrantResult(
+        action="restored",
         target_slack_user_id="U08ABC123",
-        brightbean_email="user@example.com",
         workspace_name="Test WS",
     )
-    text = format_provisioning_response(result)
+    text = format_bot_grant_response(result)
     assert "restored" in text.lower()
 
 
 def test_response_repaired():
-    """Test 20: REPAIRED response format."""
-    result = ProvisioningResult(
-        status=ProvisioningStatus.REPAIRED,
+    """Test 20: already_approved response format (formerly REPAIRED)."""
+    result = BotGrantResult(
+        action="already_approved",
         target_slack_user_id="U08ABC123",
-        brightbean_email="user@example.com",
         workspace_name="Test WS",
     )
-    text = format_provisioning_response(result)
-    assert "provisioning completed" in text.lower()
-    assert "linked" in text.lower()
+    text = format_bot_grant_response(result)
+    assert "No change" in text
+    assert "Already approved" in text
 
 
 def test_response_failed():
-    """Test 21: FAILED response format."""
-    result = ProvisioningResult(
-        status=ProvisioningStatus.FAILED,
+    """Test 21: failed response format."""
+    result = BotGrantResult(
+        action="failed",
         target_slack_user_id="U08ABC123",
-        failure_reason=ProvisioningFailureReason.USER_NOT_FOUND,
-        failure_message="No user found.",
+        failure_reason="No user found.",
     )
-    text = format_provisioning_response(result)
+    text = format_bot_grant_response(result)
     assert "not granted" in text.lower()
     assert "U08ABC123" in text
 
@@ -446,34 +430,31 @@ def test_response_bulk_mixed_statuses():
     """Test 22: Bulk response with mixed statuses."""
     results = [
         (
-            ProvisioningResult(
-                status=ProvisioningStatus.NEWLY_PROVISIONED,
+            BotGrantResult(
+                action="granted",
                 target_slack_user_id="U08ABC123",
-                brightbean_email="user1@example.com",
                 workspace_name="Test WS",
             ),
             False,
         ),
         (
-            ProvisioningResult(
-                status=ProvisioningStatus.FAILED,
+            BotGrantResult(
+                action="failed",
                 target_slack_user_id="U08DEF456",
-                failure_reason=ProvisioningFailureReason.USER_NOT_FOUND,
-                failure_message="Not found.",
+                failure_reason="Not found.",
             ),
             False,
         ),
         (
-            ProvisioningResult(
-                status=ProvisioningStatus.ALREADY_PROVISIONED,
+            BotGrantResult(
+                action="already_approved",
                 target_slack_user_id="U08GHI789",
-                brightbean_email="user3@example.com",
                 workspace_name="Test WS",
             ),
             False,
         ),
     ]
-    text = format_bulk_provisioning_response(results)
+    text = format_bulk_bot_grant_response(results)
     assert "Bulk access update" in text
     assert "U08ABC123" in text
     assert "U08DEF456" in text
@@ -526,7 +507,7 @@ def test_user_confirmation_includes_analytics_read_only():
 def test_service_non_admin_blocked(mock_provision, mock_conf):
     """Test 26: Non-admin is blocked."""
     mock_conf.return_value = True
-    mock_provision.side_effect = _provision_side_effect()
+    mock_provision.side_effect = _grant_side_effect()
     _create_admin("TTEST123", "UADMIN123")
     result = process_admin_dm("TTEST123", "UOTHER456", "Give U08ABC123 access")
     assert result.is_admin_dm is False
@@ -534,12 +515,13 @@ def test_service_non_admin_blocked(mock_provision, mock_conf):
     mock_provision.assert_not_called()
 
 
+@override_settings(ADMIN_LLM_CHAT_ENABLED="false")
 @patch("apps.slack_bot.admin_dm_service.send_user_confirmation_dm")
 @patch("apps.slack_bot.admin_dm_service.grant_slack_analytics_access")
 def test_service_no_grant_intent_not_handled(mock_provision, mock_conf):
-    """Test 27: No grant intent → not handled."""
+    """Test 27: No grant intent → not handled (when LLM chat disabled)."""
     mock_conf.return_value = True
-    mock_provision.side_effect = _provision_side_effect()
+    mock_provision.side_effect = _grant_side_effect()
     _create_admin("TTEST123", "UADMIN123")
     result = process_admin_dm("TTEST123", "UADMIN123", "Hello there")
     assert result.is_admin_dm is True
@@ -551,7 +533,7 @@ def test_service_no_grant_intent_not_handled(mock_provision, mock_conf):
 def test_service_usage_message_for_no_ids(mock_provision, mock_conf):
     """Test 28: Usage message returned when no IDs found."""
     mock_conf.return_value = True
-    mock_provision.side_effect = _provision_side_effect()
+    mock_provision.side_effect = _grant_side_effect()
     _create_admin("TTEST123", "UADMIN123")
     result = process_admin_dm("TTEST123", "UADMIN123", "Give access to everyone")
     assert result.handled is True

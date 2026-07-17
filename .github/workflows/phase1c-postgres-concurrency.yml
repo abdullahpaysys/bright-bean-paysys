@@ -1,0 +1,220 @@
+name: Phase 1C PostgreSQL Concurrency
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: phase1c-postgres-concurrency-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  postgres-concurrency:
+    name: PostgreSQL 16 concurrency validation
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_DB: brightbean_phase1c_test
+          POSTGRES_USER: brightbean_test
+          POSTGRES_PASSWORD: phase1c_test_password
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U brightbean_test -d brightbean_phase1c_test"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 10
+
+    defaults:
+      run:
+        shell: bash
+        working-directory: brightbean-studio
+
+    env:
+      DJANGO_SETTINGS_MODULE: config.settings.test_postgres
+      SECRET_KEY: test-secret-key-not-for-production
+      ENCRYPTION_KEY_SALT: test-salt-not-for-production
+      PHASE1C_POSTGRES_HOST: 127.0.0.1
+      PHASE1C_POSTGRES_PORT: "5432"
+      PHASE1C_POSTGRES_DB: brightbean_phase1c_test
+      PHASE1C_POSTGRES_USER: brightbean_test
+      PHASE1C_POSTGRES_PASSWORD: phase1c_test_password
+      SLACK_BOT_TOKEN: xoxb-test-token
+      SLACK_SIGNING_SECRET: test-signing-secret
+      SLACK_ALLOWED_TEAM_ID: TTEAM01
+      SLACK_ALLOWED_EMAIL_DOMAINS: example.com
+      ADMIN_LLM_CHAT_ENABLED: "false"
+      ANTHROPIC_API_KEY: test-anthropic-key
+      ZAI_API_KEY: test-zai-key
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+        with:
+          persist-credentials: false
+
+      - name: Set up Python
+        uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6.2.0
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: brightbean-studio/requirements.txt
+
+      - name: Prepare evidence directory
+        run: mkdir -p test-results
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -r requirements.txt
+
+      - name: Verify disposable PostgreSQL target
+        run: |
+          python - <<'PY'
+          import os
+          import django
+          from django.conf import settings
+          from django.db import connection
+
+          django.setup()
+          database = settings.DATABASES["default"]
+          print(f"engine={database['ENGINE']}")
+          print(f"host={database['HOST']}")
+          print(f"port={database['PORT']}")
+          print(f"name={database['NAME']}")
+          assert database["ENGINE"] == "django.db.backends.postgresql"
+          assert "test" in database["NAME"].lower()
+          assert database["HOST"] in {"127.0.0.1", "localhost", "postgres"}
+          assert not os.environ.get("DATABASE_URL")
+          with connection.cursor() as cursor:
+              cursor.execute("select version()")
+              print(cursor.fetchone()[0])
+          assert connection.vendor == "postgresql"
+          PY
+
+      - name: Django checks and migrations
+        run: |
+          python manage.py check
+          python manage.py makemigrations --check --dry-run
+          python manage.py migrate --noinput
+          python manage.py showmigrations slack_bot
+
+      - name: Targeted code quality checks
+        run: |
+          python -m compileall -q apps/slack_bot
+          python -m ruff check \
+            apps/slack_bot/access_provisioning.py \
+            apps/slack_bot/models.py \
+            apps/slack_bot/tests/test_phase1_atomic_access.py
+
+      - name: Required Phase 1C concurrency tests
+        run: |
+          python -m pytest \
+            apps/slack_bot/tests/test_phase1_atomic_access.py \
+            -k "test_concurrent_grant_does_not_create_duplicates or test_concurrent_revoke_is_idempotent or test_grant_revoke_race_keeps_single_auditable_access_row" \
+            -q --tb=short \
+            --junitxml=test-results/phase1c-concurrency-required.xml
+
+      - name: Assert required concurrency tests were not skipped
+        env:
+          XML_PATH: test-results/phase1c-concurrency-required.xml
+          EXPECTED_TESTS: "3"
+        run: |
+          python - <<'PY'
+          import os
+          import xml.etree.ElementTree as ET
+
+          path = os.environ["XML_PATH"]
+          expected = int(os.environ["EXPECTED_TESTS"])
+          root = ET.parse(path).getroot()
+          tests = int(root.attrib.get("tests", "0"))
+          failures = int(root.attrib.get("failures", "0"))
+          errors = int(root.attrib.get("errors", "0"))
+          skipped = int(root.attrib.get("skipped", "0"))
+          print(f"{path}: tests={tests} failures={failures} errors={errors} skipped={skipped}")
+          assert tests == expected
+          assert failures == 0
+          assert errors == 0
+          assert skipped == 0
+          PY
+
+      - name: Flake loop for concurrency tests
+        run: |
+          for run in $(seq 1 10); do
+            python -m pytest \
+              apps/slack_bot/tests/test_phase1_atomic_access.py \
+              -k "test_concurrent_grant_does_not_create_duplicates or test_concurrent_revoke_is_idempotent or test_grant_revoke_race_keeps_single_auditable_access_row" \
+              -q --tb=short \
+              --junitxml="test-results/phase1c-concurrency-repeat-${run}.xml"
+
+            XML_PATH="test-results/phase1c-concurrency-repeat-${run}.xml" EXPECTED_TESTS=3 python - <<'PY'
+          import os
+          import xml.etree.ElementTree as ET
+
+          path = os.environ["XML_PATH"]
+          expected = int(os.environ["EXPECTED_TESTS"])
+          root = ET.parse(path).getroot()
+          tests = int(root.attrib.get("tests", "0"))
+          failures = int(root.attrib.get("failures", "0"))
+          errors = int(root.attrib.get("errors", "0"))
+          skipped = int(root.attrib.get("skipped", "0"))
+          print(f"{path}: tests={tests} failures={failures} errors={errors} skipped={skipped}")
+          assert tests == expected
+          assert failures == 0
+          assert errors == 0
+          assert skipped == 0
+          PY
+          done
+
+      - name: Related Slack access tests
+        run: |
+          python -m pytest \
+            apps/slack_bot/tests/test_phase1_atomic_access.py \
+            apps/slack_bot/tests/test_access_provisioning.py \
+            apps/slack_bot/tests/test_phase1_dual_grant.py \
+            apps/slack_bot/tests/test_phase3_admin_dm.py \
+            apps/slack_bot/tests/test_whitelist_commands.py \
+            -q --tb=short \
+            --junitxml=test-results/phase1c-related-slack-access.xml
+
+      - name: Full Slack bot suite on PostgreSQL
+        run: |
+          python -m pytest apps/slack_bot/tests -q --tb=short \
+            --junitxml=test-results/phase1c-full-slack-bot-postgres.xml
+
+      - name: Capture PostgreSQL evidence
+        if: always()
+        run: |
+          python - <<'PY' > test-results/phase1c-postgres-environment.txt
+          import django
+          from django.conf import settings
+          from django.db import connection
+
+          django.setup()
+          database = settings.DATABASES["default"]
+          print("settings=config.settings.test_postgres")
+          print(f"engine={database['ENGINE']}")
+          print(f"host={database['HOST']}")
+          print(f"port={database['PORT']}")
+          print(f"name={database['NAME']}")
+          print(f"vendor={connection.vendor}")
+          with connection.cursor() as cursor:
+              cursor.execute("select version()")
+              print(cursor.fetchone()[0])
+          PY
+          python manage.py showmigrations slack_bot > test-results/phase1c-slack-bot-migrations.txt
+
+      - name: Upload Phase 1C evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: phase1c-postgres-test-evidence
+          path: brightbean-studio/test-results/
+          if-no-files-found: error
+          retention-days: 14

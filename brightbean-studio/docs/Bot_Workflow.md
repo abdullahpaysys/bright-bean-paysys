@@ -458,6 +458,20 @@ ToolContext(
 
 Every BrightBean analytics call must use this context.
 
+### 12.1 Phase 1 Admin Access Provisioning
+
+Admin DM grant/revoke commands use deterministic application code, not the LLM.
+
+- Slack identity is resolved with `users.info`.
+- Required Slack scopes are `users:read` and `users:read.email`.
+- Email text supplied in the admin message is ignored.
+- `SLACK_ALLOWED_EMAIL_DOMAINS` controls exact approved company domains.
+- Grant creates or resolves the BrightBean user, organization membership,
+  workspace membership, Slack user mapping, and bot access in one transaction.
+- Revoke revokes bot access and removes only bot-managed BrightBean membership
+  where it is safe to do so.
+- Grant and revoke attempts write append-only audit records.
+
 ---
 
 ## 13. Deterministic Command Router

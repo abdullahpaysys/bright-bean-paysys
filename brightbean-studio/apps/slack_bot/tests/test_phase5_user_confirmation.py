@@ -31,21 +31,16 @@ from unittest.mock import MagicMock, patch
 import pytest
 from django.test import Client, override_settings
 
-from apps.slack_bot.access_provisioning import (
-    ProvisioningResult,
-    ProvisioningStatus,
-)
 from apps.slack_bot.access_service import (
     BulkGrantResult,
     GrantResult,
-    grant_user_access,
 )
-from apps.slack_bot.admin_dm_parser import parse_grant_command
 from apps.slack_bot.admin_dm_response import (
     format_bulk_grant_response,
     format_single_grant_response,
 )
 from apps.slack_bot.admin_dm_service import process_admin_dm
+from apps.slack_bot.bot_grant_service import BotGrantResult
 from apps.slack_bot.constants import (
     ACCESS_STATUS_APPROVED,
     ACCESS_STATUS_REVOKED,
@@ -56,13 +51,10 @@ from apps.slack_bot.delivery import SlackDeliveryResult
 from apps.slack_bot.models import (
     BotAdministrator,
     BotUserAccess,
-    SlackInboundEvent,
     UnauthorizedAccessAttempt,
 )
 from apps.slack_bot.tests.conftest import signed_slack_headers
 from apps.slack_bot.user_confirmation_service import (
-    USER_CONFIRMATION_DM_TEXT,
-    UserConfirmationResult,
     send_bulk_user_confirmation_dms,
     send_user_confirmation_dm,
 )
@@ -168,20 +160,17 @@ def _create_unauthorized_attempt(
 
 def _provision_side_effect(
     *,
-    status=ProvisioningStatus.NEWLY_PROVISIONED,
-    email="user@example.com",
+    action="granted",
     workspace_name="Test WS",
 ):
-    """Return a side_effect function for grant_slack_analytics_access mock."""
+    """Return a side_effect function for grant_bot_access mock."""
     def _effect(
         *,
-        approving_slack_user_id,
         team_id,
-        source_channel_id,
         target_slack_user_id,
-        brightbean_email=None,
+        approving_slack_user_id,
     ):
-        if status == ProvisioningStatus.NEWLY_PROVISIONED:
+        if action == "granted":
             BotUserAccess.objects.create(
                 workspace_id=team_id,
                 slack_user_id=target_slack_user_id,
@@ -189,22 +178,17 @@ def _provision_side_effect(
                 permission=PERMISSION_READ_ONLY,
                 granted_by_slack_user_id=approving_slack_user_id,
             )
-        elif status == ProvisioningStatus.RESTORED:
+        elif action == "restored":
             access = BotUserAccess.objects.get(
                 workspace_id=team_id, slack_user_id=target_slack_user_id,
             )
             access.status = ACCESS_STATUS_APPROVED
             access.granted_by_slack_user_id = approving_slack_user_id
             access.save(update_fields=["status", "granted_by_slack_user_id"])
-        return ProvisioningResult(
-            status=status,
+        return BotGrantResult(
+            action=action,
             target_slack_user_id=target_slack_user_id,
-            brightbean_email=brightbean_email or email,
             workspace_name=workspace_name,
-            bot_access_action="created" if status == ProvisioningStatus.NEWLY_PROVISIONED else "restored",
-            mapping_action="created",
-            org_membership_action="created",
-            ws_membership_action="created",
         )
     return _effect
 
@@ -302,7 +286,7 @@ def test_newly_approved_single_user_receives_dm(mock_send_conf, mock_provision):
 def test_restored_single_user_receives_dm(mock_send_conf, mock_provision):
     """Test 2: Restored single user receives confirmation DM."""
     mock_send_conf.return_value = _ok_result()
-    mock_provision.side_effect = _provision_side_effect(status=ProvisioningStatus.RESTORED)
+    mock_provision.side_effect = _provision_side_effect(action="restored")
     _create_admin("TTEST123", "UADMIN123")
     _create_revoked_user("TTEST123", "U08ABC123")
     _create_unauthorized_attempt("TTEST123", "U08ABC123", "C123")
@@ -317,7 +301,7 @@ def test_restored_single_user_receives_dm(mock_send_conf, mock_provision):
 def test_already_approved_no_duplicate_dm(mock_send_conf, mock_provision):
     """Test 3: Already-approved user does not receive duplicate DM."""
     mock_send_conf.return_value = _ok_result()
-    mock_provision.side_effect = _provision_side_effect(status=ProvisioningStatus.ALREADY_PROVISIONED)
+    mock_provision.side_effect = _provision_side_effect(action="already_approved")
     _create_admin("TTEST123", "UADMIN123")
     _create_approved_user("TTEST123", "U08ABC123")
     _create_unauthorized_attempt("TTEST123", "U08ABC123", "C123")
@@ -411,7 +395,7 @@ def test_bulk_notifies_restored_users(mock_send_conf, mock_provision):
     """Test 9: Bulk grant notifies every restored user."""
     mock_send_conf.return_value = _ok_result()
     # First user (U08ABC123) is restored, second (U08DEF456) is newly provisioned
-    def _mixed_effect(*, approving_slack_user_id, team_id, source_channel_id, target_slack_user_id, brightbean_email=None):
+    def _mixed_effect(*, team_id, target_slack_user_id, approving_slack_user_id):
         if target_slack_user_id == "U08ABC123":
             access = BotUserAccess.objects.get(
                 workspace_id=team_id, slack_user_id=target_slack_user_id,
@@ -419,24 +403,20 @@ def test_bulk_notifies_restored_users(mock_send_conf, mock_provision):
             access.status = ACCESS_STATUS_APPROVED
             access.granted_by_slack_user_id = approving_slack_user_id
             access.save(update_fields=["status", "granted_by_slack_user_id"])
-            return ProvisioningResult(
-                status=ProvisioningStatus.RESTORED,
+            return BotGrantResult(
+                action="restored",
                 target_slack_user_id=target_slack_user_id,
-                brightbean_email=brightbean_email or "user@example.com",
                 workspace_name="Test WS",
-                bot_access_action="restored",
             )
         BotUserAccess.objects.create(
             workspace_id=team_id, slack_user_id=target_slack_user_id,
             status=ACCESS_STATUS_APPROVED, permission=PERMISSION_READ_ONLY,
             granted_by_slack_user_id=approving_slack_user_id,
         )
-        return ProvisioningResult(
-            status=ProvisioningStatus.NEWLY_PROVISIONED,
+        return BotGrantResult(
+            action="granted",
             target_slack_user_id=target_slack_user_id,
-            brightbean_email=brightbean_email or "user@example.com",
             workspace_name="Test WS",
-            bot_access_action="created",
         )
     mock_provision.side_effect = _mixed_effect
     _create_admin("TTEST123", "UADMIN123")
@@ -457,15 +437,14 @@ def test_bulk_notifies_restored_users(mock_send_conf, mock_provision):
 def test_bulk_skips_already_approved(mock_send_conf, mock_provision):
     """Test 10: Bulk grant does not notify already-approved users."""
     mock_send_conf.return_value = _ok_result()
-    # First call returns ALREADY_PROVISIONED, subsequent NEWLY_PROVISIONED
+    # First call returns already_approved, subsequent granted
     call_count = [0]
-    def _mixed_effect(*, approving_slack_user_id, team_id, source_channel_id, target_slack_user_id, brightbean_email=None):
+    def _mixed_effect(*, team_id, target_slack_user_id, approving_slack_user_id):
         call_count[0] += 1
         if call_count[0] == 1:
-            return ProvisioningResult(
-                status=ProvisioningStatus.ALREADY_PROVISIONED,
+            return BotGrantResult(
+                action="already_approved",
                 target_slack_user_id=target_slack_user_id,
-                brightbean_email=brightbean_email or "user@example.com",
                 workspace_name="Test WS",
             )
         BotUserAccess.objects.create(
@@ -473,12 +452,10 @@ def test_bulk_skips_already_approved(mock_send_conf, mock_provision):
             status=ACCESS_STATUS_APPROVED, permission=PERMISSION_READ_ONLY,
             granted_by_slack_user_id=approving_slack_user_id,
         )
-        return ProvisioningResult(
-            status=ProvisioningStatus.NEWLY_PROVISIONED,
+        return BotGrantResult(
+            action="granted",
             target_slack_user_id=target_slack_user_id,
-            brightbean_email=brightbean_email or "user@example.com",
             workspace_name="Test WS",
-            bot_access_action="created",
         )
     mock_provision.side_effect = _mixed_effect
     _create_admin("TTEST123", "UADMIN123")

@@ -6,6 +6,7 @@ Phase 4: minimal event persistence + deduplication by ``event_id``.
 from __future__ import annotations
 
 import uuid
+from typing import cast
 
 from django.conf import settings
 from django.db import models
@@ -56,7 +57,10 @@ class SlackInboundEventManager(models.Manager):
             "message_text": message_text,
             "thread_ts": thread_ts or "",
         }
-        return self.get_or_create(event_id=event_id, defaults=defaults)
+        return cast(
+            tuple[SlackInboundEvent, bool],
+            self.get_or_create(event_id=event_id, defaults=defaults),
+        )
 
 
 class SlackInboundEvent(models.Model):
@@ -238,6 +242,28 @@ class BotUserAccess(models.Model):
     granted_by_slack_user_id = models.CharField(max_length=64, default=SYSTEM_ACTOR)
     granted_at = models.DateTimeField(auto_now_add=True)
     revoked_at = models.DateTimeField(null=True, blank=True)
+
+    # Durable Phase 1 provisioning provenance. ``workspace_id`` above is the
+    # Slack team/workspace ID; these fields point at the BrightBean objects
+    # touched by the canonical provisioning flow. Revoke uses the booleans to
+    # remove only memberships that the bot created, never manually managed
+    # memberships.
+    brightbean_user = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        null=True,
+        blank=True,
+        on_delete=models.SET_NULL,
+        related_name="slack_bot_access_records",
+    )
+    brightbean_workspace = models.ForeignKey(
+        "workspaces.Workspace",
+        null=True,
+        blank=True,
+        on_delete=models.SET_NULL,
+        related_name="slack_bot_access_records",
+    )
+    bot_created_org_membership = models.BooleanField(default=False)
+    bot_created_workspace_membership = models.BooleanField(default=False)
 
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)

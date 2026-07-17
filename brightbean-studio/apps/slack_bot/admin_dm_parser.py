@@ -4,9 +4,12 @@ No LLM is used — parsing is purely syntactic.  The parser recognises
 common grant-related English phrases and extracts Slack Member IDs
 from arbitrary text.
 
-Supports optional email pairing via ``as`` syntax::
+Legacy email pairing may still be parsed for compatibility, but the active
+provisioning flow never trusts email text from the admin message.
 
-    result = parse_grant_command("Give U08ABC123 access as user@company.com")
+Example::
+
+    result = parse_grant_command("Give U08ABC123 access")
     if result.is_grant_intent:
         entries = result.entries       # [("U08ABC123", "user@company.com")]
         member_ids = result.member_ids # ["U08ABC123"]
@@ -15,7 +18,7 @@ Supports optional email pairing via ``as`` syntax::
 Bulk format with mixed email/no-email::
 
     Give access to:
-    U08ABC123 as user1@company.com
+    U08ABC123
     U08DEF456
 """
 
@@ -29,7 +32,6 @@ from .slack_id_validation import (
     is_valid_member_id,
 )
 
-
 # ---------------------------------------------------------------------------
 # Grant-intent keywords (lowercased, checked as whole-word substrings)
 # ---------------------------------------------------------------------------
@@ -41,14 +43,40 @@ _GRANT_TERMS: tuple[str, ...] = (
     "allow",
     "whitelist",
     "approve",
+    "access do",
+    "ijazat do",
+    "allow karo",
+    "approve karo",
     "give",
     "grant",
     "add",
 )
 
+_REVOKE_TERMS: tuple[str, ...] = (
+    "revoke access",
+    "remove access",
+    "delete access",
+    "block access",
+    "deny access",
+    "disable access",
+    "revoke",
+    "remove",
+    "block",
+    "deny",
+    "access hatao",
+    "hata do",
+    "rok do",
+    "band karo",
+)
+
 # Build a single regex that matches any grant term as a word boundary phrase.
 _GRANT_RE = re.compile(
     r"\b(" + "|".join(re.escape(term) for term in _GRANT_TERMS) + r")\b",
+    re.IGNORECASE,
+)
+
+_REVOKE_RE = re.compile(
+    r"\b(" + "|".join(re.escape(term) for term in _REVOKE_TERMS) + r")\b",
     re.IGNORECASE,
 )
 
@@ -96,6 +124,20 @@ class GrantCommandResult:
     """
 
     is_grant_intent: bool
+    member_ids: list[str] = field(default_factory=list)
+    invalid_ids: list[str] = field(default_factory=list)
+    entries: list[GrantCommandEntry] = field(default_factory=list)
+    email_conflicts: list[str] = field(default_factory=list)
+
+
+@dataclass(frozen=True)
+class AdminAccessCommandResult:
+    """Parsed admin access command.
+
+    ``intent`` is ``"grant"``, ``"revoke"``, or ``""``.
+    """
+
+    intent: str
     member_ids: list[str] = field(default_factory=list)
     invalid_ids: list[str] = field(default_factory=list)
     entries: list[GrantCommandEntry] = field(default_factory=list)
@@ -183,6 +225,35 @@ def parse_grant_command(text: str) -> GrantCommandResult:
     )
 
 
+def parse_admin_access_command(text: str) -> AdminAccessCommandResult:
+    """Parse an admin DM into a grant or revoke command."""
+    grant = parse_grant_command(text)
+    is_revoke = bool(text and _REVOKE_RE.search(text))
+
+    if is_revoke:
+        return AdminAccessCommandResult(
+            intent="revoke",
+            member_ids=grant.member_ids,
+            invalid_ids=grant.invalid_ids,
+            entries=[
+                GrantCommandEntry(member_id=mid)
+                for mid in grant.member_ids
+            ],
+            email_conflicts=[],
+        )
+
+    if grant.is_grant_intent:
+        return AdminAccessCommandResult(
+            intent="grant",
+            member_ids=grant.member_ids,
+            invalid_ids=grant.invalid_ids,
+            entries=grant.entries,
+            email_conflicts=grant.email_conflicts,
+        )
+
+    return AdminAccessCommandResult(intent="")
+
+
 # ---------------------------------------------------------------------------
 # Usage message
 # ---------------------------------------------------------------------------
@@ -190,9 +261,11 @@ def parse_grant_command(text: str) -> GrantCommandResult:
 USAGE_MESSAGE = (
     "I could not find a valid Slack Member ID.\n\n"
     "Example:\n"
-    "Give U08ABC123 access as user@company.com\n\n"
+    "Give U08ABC123 access\n\n"
+    "Revoke example:\n"
+    "Revoke U08ABC123 access\n\n"
     "Bulk example:\n"
     "Give access to:\n"
-    "U08ABC123 as user1@company.com\n"
+    "U08ABC123\n"
     "U08DEF456"
 )

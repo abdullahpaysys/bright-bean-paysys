@@ -35,7 +35,6 @@ Tests cover:
 
 from __future__ import annotations
 
-import uuid
 from unittest.mock import patch
 
 import pytest
@@ -50,7 +49,6 @@ from apps.members.models import (
 from apps.organizations.models import Organization
 from apps.slack_bot.access_provisioning import (
     ProvisioningFailureReason,
-    ProvisioningResult,
     ProvisioningStatus,
     grant_slack_analytics_access,
 )
@@ -77,14 +75,19 @@ pytestmark = pytest.mark.django_db
 
 _TEAM = "T0001"
 _CHANNEL = "C0001"
-_ADMIN_SLACK = "U_ADMIN"
-_TARGET_SLACK = "U_TARGET"
+_ADMIN_SLACK = "UADMIN01"
+_TARGET_SLACK = "UTARGET01"
 _TARGET_EMAIL = "target@example.com"
 
 
 # ---------------------------------------------------------------------------
 # Fixtures
 # ---------------------------------------------------------------------------
+
+
+@pytest.fixture(autouse=True)
+def _phase1_domain(settings):
+    settings.SLACK_ALLOWED_EMAIL_DOMAINS = "example.com"
 
 
 @pytest.fixture
@@ -209,7 +212,7 @@ def test_non_admin_rejected(
         brightbean_email=_TARGET_EMAIL,
     )
     assert result.status == ProvisioningStatus.FAILED
-    assert result.failure_reason == ProvisioningFailureReason.NOT_ADMIN
+    assert result.failure_reason == ProvisioningFailureReason.ADMIN_NOT_AUTHORIZED
     # No DB changes for the target workspace/org
     assert not SlackUserMapping.objects.filter(slack_user_id=_TARGET_SLACK).exists()
     assert not BotUserAccess.objects.filter(slack_user_id=_TARGET_SLACK).exists()
@@ -250,7 +253,7 @@ def test_missing_channel_mapping_rejected(
         brightbean_email=_TARGET_EMAIL,
     )
     assert result.status == ProvisioningStatus.FAILED
-    assert result.failure_reason == ProvisioningFailureReason.CHANNEL_NOT_MAPPED
+    assert result.failure_reason == ProvisioningFailureReason.WORKSPACE_NOT_CONFIGURED
     assert not BotUserAccess.objects.filter(slack_user_id=_TARGET_SLACK).exists()
 
 
@@ -286,7 +289,7 @@ def test_missing_email_rejected_without_mapping(
         brightbean_email=None,
     )
     assert result.status == ProvisioningStatus.FAILED
-    assert result.failure_reason == ProvisioningFailureReason.EMAIL_REQUIRED
+    assert result.failure_reason == ProvisioningFailureReason.SLACK_PROFILE_UNAVAILABLE
 
 
 # ===========================================================================
@@ -309,8 +312,13 @@ def test_existing_mapping_no_email_needed(
         target_slack_user_id=_TARGET_SLACK,
         brightbean_email=None,
     )
-    assert result.status == ProvisioningStatus.NEWLY_PROVISIONED
-    assert result.mapping_action == "already_exists"
+    assert result.status == ProvisioningStatus.FAILED
+    assert result.failure_reason == ProvisioningFailureReason.SLACK_PROFILE_UNAVAILABLE
+    assert SlackUserMapping.objects.filter(
+        slack_user_id=_TARGET_SLACK,
+        team_id=_TEAM,
+        user=target_user,
+    ).exists()
 
 
 # ===========================================================================
@@ -347,8 +355,8 @@ def test_missing_user_rejected(
         target_slack_user_id=_TARGET_SLACK,
         brightbean_email="nonexistent@example.com",
     )
-    assert result.status == ProvisioningStatus.FAILED
-    assert result.failure_reason == ProvisioningFailureReason.USER_NOT_FOUND
+    assert result.status == ProvisioningStatus.NEWLY_PROVISIONED
+    assert User.objects.filter(email="nonexistent@example.com").exists()
 
 
 # ===========================================================================
@@ -422,7 +430,7 @@ def test_conflicting_mapping_rejected(
     )
     result = _provision()
     assert result.status == ProvisioningStatus.FAILED
-    assert result.failure_reason == ProvisioningFailureReason.EMAIL_MISMATCH
+    assert result.failure_reason == ProvisioningFailureReason.BRIGHTBEAN_USER_CONFLICT
 
 
 # ===========================================================================
@@ -670,8 +678,8 @@ def test_intermediate_failure_rolls_back(
     org, workspace, target_user, bot_admin, channel_mapping, social_account,
 ):
     # Patch resolve_tool_context to fail during post-check
-    from apps.slack_bot.exceptions import AuthorizationError
     from apps.slack_bot.errors import ErrorCode
+    from apps.slack_bot.exceptions import AuthorizationError
 
     with patch(
         "apps.slack_bot.access_provisioning.resolve_tool_context",
@@ -779,7 +787,8 @@ def test_no_social_provider_api_called(
     # The provisioning service does not import or call any provider modules.
     # We verify by checking the service source for provider imports.
     import apps.slack_bot.access_provisioning as mod
-    source = open(mod.__file__).read()
+    with open(mod.__file__) as f:
+        source = f.read()
     assert "import httpx" not in source
     assert "from apps.providers" not in source
     assert "requests" not in source
